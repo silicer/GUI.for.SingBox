@@ -1,4 +1,4 @@
-name: Build Linux ARM64 AppImage (Debian 10 Final Fix)
+name: Build Linux ARM64 AppImage (Debian 10 Internal Error Fix)
 
 on:
   push:
@@ -47,17 +47,17 @@ jobs:
           echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
           
           apt-get update
-          # 尽量安装 backports 里的最新 WebKit 
           apt-get install -y -t buster-backports libwebkit2gtk-4.0-dev || apt-get install -y libwebkit2gtk-4.0-dev
           
           apt-get install -y wget curl git build-essential pkg-config \
           libgtk-3-dev libayatana-appindicator3-dev \
           librsvg2-dev file desktop-file-utils fuse libfuse2 zip
 
-      - name: Install Go
+      - name: Install Go (v1.22.10)
         run: |
-          wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz
-          tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz
+          # 升级到 1.22.10 以修复 "embed without types" 编译器 Bug
+          wget https://go.dev/dl/go1.22.10.linux-arm64.tar.gz
+          tar -C /usr/local -xzf go1.22.10.linux-arm64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
 
       - name: Download Frontend Artifact
@@ -66,22 +66,24 @@ jobs:
           name: frontend-dist
           path: frontend/dist
 
-      - name: Build Binary with Wails v2.8.2
+      - name: Build Binary (Force Version & Cache Clean)
         run: |
           export PATH=$PATH:/usr/local/go/bin
+          export CGO_ENABLED=1
           
           echo "==> Installing Wails CLI v2.8.2..."
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.8.2
           W_BIN=$(go env GOPATH)/bin/wails
           
-          # 1. 物理修改 go.mod 中的版本号，消除 Warning 并确保不下载新版代码
+          # 1. 强制降级项目依赖版本
           sed -i 's/github.com\/wailsapp\/wails\/v2 v2.11.0/github.com\/wailsapp\/wails\/v2 v2.8.2/g' go.mod
-          
-          # 2. 移除可能存在的 replace 指令并重新整理
           go mod edit -dropreplace github.com/wailsapp/wails/v2
+          
+          # 2. 清理 Go 编译缓存（防止 internal error 再次出现）
+          go clean -cache -modcache
           go mod tidy
 
-          echo "==> Starting Build with locked version..."
+          echo "==> Starting Build..."
           $W_BIN build -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
 
       - name: Package AppImage

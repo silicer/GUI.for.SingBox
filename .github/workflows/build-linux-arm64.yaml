@@ -1,0 +1,87 @@
+name: Build Linux ARM64 Artifact
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: # 支持手动触发测试
+
+permissions:
+  contents: read
+
+jobs:
+  Build-Frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+          
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+          
+      - name: Build Frontend Assets
+        run: |
+          cd frontend
+          pnpm install --frozen-lockfile
+          pnpm build-only
+          
+      - name: Upload Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+  Build-Linux-ARM64:
+    needs: Build-Frontend
+    # 使用 GitHub 提供的原生 ARM64 运行器
+    runs-on: ubuntu-24.04-arm
+    env:
+      APP_NAME: GUI.for.SingBox
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Download Frontend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+
+      - name: Build for Linux ARM64
+        run: |
+          export GOOS=linux
+          export GOARCH=arm64
+          
+          echo "==> Building Linux arm64..."
+          # 原生环境编译，无需指定 CC 交叉编译器
+          ~/go/bin/wails build -m -s -trimpath -skipbindings -devtools -tags webkit2_41 -o $APP_NAME
+          
+          # 进入产物目录并压缩
+          cd build/bin
+          zip $APP_NAME-linux-arm64.zip $APP_NAME
+          
+      - name: Upload Linux ARM64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GUI-SingBox-Linux-ARM64
+          path: build/bin/*.zip
+          retention-days: 7 # 产物保留天数

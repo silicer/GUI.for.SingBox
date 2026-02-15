@@ -1,4 +1,4 @@
-name: Build Linux ARM64 AppImage (Debian 10 Compatible)
+name: Build Linux ARM64 AppImage (Debian 10 Archive)
 
 on:
   push:
@@ -30,26 +30,30 @@ jobs:
 
   Build-AppImage-Debian10:
     needs: Build-Frontend
-    runs-on: ubuntu-24.04-arm # 使用原生 ARM 运行器
+    runs-on: ubuntu-24.04-arm
     container:
-      image: debian:10 # 核心：直接在 Debian 10 环境中编译，确保 glibc 2.28 兼容性
+      image: debian:10
       options: --user root
     env:
       APP_NAME: GUI.for.SingBox
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare Debian 10 Environment
+      - name: Fix Debian 10 Sources (Archive)
         run: |
-          # Debian 10 已经是 oldstable，更新源
+          # 使用存档源并忽略过期时间
+          echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list
+          echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list
+          echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
+          
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y wget curl git build-essential pkg-config \
           libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev \
           librsvg2-dev file desktop-file-utils fuse libfuse2 zip
 
-      - name: Install Go (Latest)
+      - name: Install Go
         run: |
-          # Debian 10 自带的 Go 太老，手动安装最新的
           wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz
           tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
@@ -65,32 +69,19 @@ jobs:
           export PATH=$PATH:/usr/local/go/bin
           go install github.com/wailsapp/wails/v2/cmd/wails@latest
           export PATH=$PATH:/root/go/bin
-          
-          # 编译指令，显式指定 webkit2_40
           wails build -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
 
       - name: Package AppImage
         run: |
-          # 下载 linuxdeploy ARM64
           wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
           chmod +x linuxdeploy
-          
-          # 在容器内解压运行
           ./linuxdeploy --appimage-extract
           export PATH=$(pwd)/squashfs-root/usr/bin:$PATH
           
-          # 准备 AppDir
           mkdir -p AppDir
           cp build/bin/$APP_NAME AppDir/
+          [ -f "build/appicon.png" ] && cp build/appicon.png AppDir/appicon.png || touch AppDir/appicon.png
           
-          # 图标处理（如果 build/appicon.png 不存在则创建一个占位符）
-          if [ -f "build/appicon.png" ]; then
-            cp build/appicon.png AppDir/appicon.png
-          else
-            touch AppDir/appicon.png
-          fi
-          
-          # 创建 Desktop 文件
           cat > AppDir/gui-for-singbox.desktop <<EOF
           [Desktop Entry]
           Name=GUI.for.SingBox
@@ -100,10 +91,6 @@ jobs:
           Categories=Utility;
           EOF
 
-          # 执行打包
-          # 注意：在 Debian 10 上运行 linuxdeploy 可能会遇到 glibc 兼容性问题
-          # 如果 linuxdeploy 本身报错，通常是因为它需要更高的 glibc
-          # 我们使用 --appimage-extract 后的二进制直接运行
           linuxdeploy --appdir AppDir \
             -e build/bin/$APP_NAME \
             -i AppDir/appicon.png \

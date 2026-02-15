@@ -1,4 +1,4 @@
-name: Build Linux ARM64 AppImage (Debian 10 Archive Fix)
+name: Build Linux ARM64 AppImage (Debian 10 Compatibility Fix)
 
 on:
   push:
@@ -39,24 +39,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fix Debian 10 Sources (Archive)
+      - name: Fix Debian 10 Sources (Archive + Backports)
         run: |
-          # 1. 强制更换为 Archive 源
+          # 1. 配置基础源和 Backports 存档源
           echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list
           echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list
+          echo "deb http://archive.debian.org/debian buster-backports main" >> /etc/apt/sources.list
+          
+          # 2. 忽略 Release 文件过期校验
           echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
           
-          export DEBIAN_FRONTEND=noninteractive
+          # 3. 更新并从 Backports 安装较新版的 WebKit (2.32+), 解决 Wails 编译错误
           apt-get update
+          apt-get install -y -t buster-backports libwebkit2gtk-4.0-dev
+          
+          # 4. 安装其他必要依赖
           apt-get install -y wget curl git build-essential pkg-config \
-          libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev \
+          libgtk-3-dev libayatana-appindicator3-dev \
           librsvg2-dev file desktop-file-utils fuse libfuse2 zip
 
       - name: Install Go
         run: |
           wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz
           tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz
-          # 将 Go 二进制目录永久加入当前 Job 的 PATH
           echo "/usr/local/go/bin" >> $GITHUB_PATH
 
       - name: Download Frontend Artifact
@@ -67,41 +72,27 @@ jobs:
 
       - name: Build Binary
         run: |
-          # 确保 go 在路径中（双重保险）
           export PATH=$PATH:/usr/local/go/bin
-          
-          echo "==> Installing Wails CLI..."
           go install github.com/wailsapp/wails/v2/cmd/wails@latest
           
-          # 获取 GOPATH 并定义 Wails 的绝对路径
           W_BIN=$(go env GOPATH)/bin/wails
+          echo "==> Using Wails: $W_BIN"
           
-          echo "==> Starting Wails Build..."
-          # 使用绝对路径运行 wails
+          # 编译指令
           $W_BIN build -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
 
       - name: Package AppImage
         run: |
-          # 下载并解压 linuxdeploy
+          # 使用 linuxdeploy 打包
           wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
           chmod +x linuxdeploy
           ./linuxdeploy --appimage-extract
-          
-          # 定义解压后的 linuxdeploy 路径
           LD_BIN=$(pwd)/squashfs-root/usr/bin/linuxdeploy
           
           mkdir -p AppDir
           cp build/bin/$APP_NAME AppDir/
+          [ -f "build/appicon.png" ] && cp build/appicon.png AppDir/appicon.png || touch AppDir/appicon.png
           
-          # 准备图标
-          if [ -f "build/appicon.png" ]; then
-            cp build/appicon.png AppDir/appicon.png
-          else
-            # 如果没有图标，创建一个空的防止 linuxdeploy 报错
-            touch AppDir/appicon.png
-          fi
-          
-          # 准备 Desktop 文件
           cat > AppDir/gui-for-singbox.desktop <<EOF
           [Desktop Entry]
           Name=GUI.for.SingBox
@@ -111,14 +102,12 @@ jobs:
           Categories=Utility;
           EOF
 
-          # 执行打包（不依赖 FUSE 挂载）
           $LD_BIN --appdir AppDir \
             -e build/bin/$APP_NAME \
             -i AppDir/appicon.png \
             -d AppDir/gui-for-singbox.desktop \
             --output appimage
 
-          # 重命名
           mv *.AppImage $APP_NAME-Debian10-ARM64.AppImage
 
       - name: Upload AppImage

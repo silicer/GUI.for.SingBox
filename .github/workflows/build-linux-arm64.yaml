@@ -1,4 +1,4 @@
-name: Build Linux ARM64 AppImage (Debian 10 Internal Error Fix)
+name: Build Linux ARM64 AppImage (Final Fix - Go 1.23)
 
 on:
   push:
@@ -53,11 +53,11 @@ jobs:
           libgtk-3-dev libayatana-appindicator3-dev \
           librsvg2-dev file desktop-file-utils fuse libfuse2 zip
 
-      - name: Install Go (v1.22.10)
+      - name: Install Go (v1.23.6)
         run: |
-          # 升级到 1.22.10 以修复 "embed without types" 编译器 Bug
-          wget https://go.dev/dl/go1.22.10.linux-arm64.tar.gz
-          tar -C /usr/local -xzf go1.22.10.linux-arm64.tar.gz
+          # 使用最新的 Go 1.23.6 避开 1.22 的编译器 Bug
+          wget https://go.dev/dl/go1.23.6.linux-arm64.tar.gz
+          tar -C /usr/local -xzf go1.23.6.linux-arm64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
 
       - name: Download Frontend Artifact
@@ -66,25 +66,27 @@ jobs:
           name: frontend-dist
           path: frontend/dist
 
-      - name: Build Binary (Force Version & Cache Clean)
+      - name: Build Binary (Clean Build with Wails 2.8.2)
         run: |
           export PATH=$PATH:/usr/local/go/bin
           export CGO_ENABLED=1
           
-          echo "==> Installing Wails CLI v2.8.2..."
+          # 1. 安装 Wails CLI v2.8.2
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.8.2
           W_BIN=$(go env GOPATH)/bin/wails
           
-          # 1. 强制降级项目依赖版本
+          # 2. 强制版本降级
           sed -i 's/github.com\/wailsapp\/wails\/v2 v2.11.0/github.com\/wailsapp\/wails\/v2 v2.8.2/g' go.mod
           go mod edit -dropreplace github.com/wailsapp/wails/v2
           
-          # 2. 清理 Go 编译缓存（防止 internal error 再次出现）
+          # 3. 彻底清理缓存与旧产物
+          rm -rf build/bin
           go clean -cache -modcache
           go mod tidy
 
-          echo "==> Starting Build..."
-          $W_BIN build -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
+          echo "==> Starting Wails Build..."
+          # 增加 -clean 标志
+          $W_BIN build -clean -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
 
       - name: Package AppImage
         run: |
@@ -95,7 +97,12 @@ jobs:
           
           mkdir -p AppDir
           cp build/bin/$APP_NAME AppDir/
-          [ -f "build/appicon.png" ] && cp build/appicon.png AppDir/appicon.png || touch AppDir/appicon.png
+          
+          if [ -f "build/appicon.png" ]; then
+            cp build/appicon.png AppDir/appicon.png
+          else
+            touch AppDir/appicon.png
+          fi
           
           cat > AppDir/gui-for-singbox.desktop <<EOF
           [Desktop Entry]

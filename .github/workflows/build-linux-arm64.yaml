@@ -1,4 +1,4 @@
-name: Build Linux ARM64 (WebKit 4.0 Legacy)
+name: Build Linux ARM64 AppImage (Debian 10 Compatible)
 
 on:
   push:
@@ -28,19 +28,31 @@ jobs:
           name: frontend-dist
           path: frontend/dist
 
-  Build-Linux-ARM64:
+  Build-AppImage-Debian10:
     needs: Build-Frontend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm # 使用原生 ARM 运行器
+    container:
+      image: debian:10 # 核心：直接在 Debian 10 环境中编译，确保 glibc 2.28 兼容性
+      options: --user root
     env:
       APP_NAME: GUI.for.SingBox
     steps:
       - uses: actions/checkout@v4
 
-      # 使用 QEMU 模拟 ARM64 环境
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      - name: Prepare Debian 10 Environment
+        run: |
+          # Debian 10 已经是 oldstable，更新源
+          apt-get update
+          apt-get install -y wget curl git build-essential pkg-config \
+          libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev \
+          librsvg2-dev file desktop-file-utils fuse libfuse2 zip
+
+      - name: Install Go (Latest)
+        run: |
+          # Debian 10 自带的 Go 太老，手动安装最新的
+          wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz
+          tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
 
       - name: Download Frontend Artifact
         uses: actions/download-artifact@v4
@@ -48,35 +60,60 @@ jobs:
           name: frontend-dist
           path: frontend/dist
 
-      # 在 Ubuntu 22.04 的 ARM64 容器内进行构建
-      - name: Build in Ubuntu 22.04 Container
+      - name: Build Binary
         run: |
-          docker run --rm --platform linux/arm64 \
-            -v ${{ github.workspace }}:/work \
-            -w /work \
-            ubuntu:22.04 /bin/bash -c "
-              apt-get update && \
-              apt-get install -y wget curl git build-essential pkg-config \
-              libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev zip && \
-              
-              # 安装 Go
-              wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz && \
-              tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz && \
-              export PATH=\$PATH:/usr/local/go/bin && \
-              
-              # 安装 Wails
-              go install github.com/wailsapp/wails/v2/cmd/wails@latest && \
-              export PATH=\$PATH:/root/go/bin && \
-              
-              echo '==> Starting Wails Build...' && \
-              wails build -m -s -trimpath -skipbindings -devtools -tags webkit2_40 -o $APP_NAME && \
-              
-              cd build/bin && \
-              zip $APP_NAME-linux-arm64-webkit40.zip $APP_NAME
-            "
+          export PATH=$PATH:/usr/local/go/bin
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          export PATH=$PATH:/root/go/bin
+          
+          # 编译指令，显式指定 webkit2_40
+          wails build -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
 
-      - name: Upload Linux ARM64 Artifact
+      - name: Package AppImage
+        run: |
+          # 下载 linuxdeploy ARM64
+          wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
+          chmod +x linuxdeploy
+          
+          # 在容器内解压运行
+          ./linuxdeploy --appimage-extract
+          export PATH=$(pwd)/squashfs-root/usr/bin:$PATH
+          
+          # 准备 AppDir
+          mkdir -p AppDir
+          cp build/bin/$APP_NAME AppDir/
+          
+          # 图标处理（如果 build/appicon.png 不存在则创建一个占位符）
+          if [ -f "build/appicon.png" ]; then
+            cp build/appicon.png AppDir/appicon.png
+          else
+            touch AppDir/appicon.png
+          fi
+          
+          # 创建 Desktop 文件
+          cat > AppDir/gui-for-singbox.desktop <<EOF
+          [Desktop Entry]
+          Name=GUI.for.SingBox
+          Exec=$APP_NAME
+          Icon=appicon
+          Type=Application
+          Categories=Utility;
+          EOF
+
+          # 执行打包
+          # 注意：在 Debian 10 上运行 linuxdeploy 可能会遇到 glibc 兼容性问题
+          # 如果 linuxdeploy 本身报错，通常是因为它需要更高的 glibc
+          # 我们使用 --appimage-extract 后的二进制直接运行
+          linuxdeploy --appdir AppDir \
+            -e build/bin/$APP_NAME \
+            -i AppDir/appicon.png \
+            -d AppDir/gui-for-singbox.desktop \
+            --output appimage
+
+          mv *.AppImage $APP_NAME-Debian10-ARM64.AppImage
+
+      - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: GUI-SingBox-Linux-ARM64
-          path: build/bin/*.zip
+          name: GUI-SingBox-Debian10-ARM64
+          path: ./*.AppImage

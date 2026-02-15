@@ -1,13 +1,10 @@
-name: Build Linux ARM64 (WebKit 4.0)
+name: Build Linux ARM64 (WebKit 4.0 Legacy)
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   Build-Frontend:
@@ -22,34 +19,28 @@ jobs:
           node-version: "latest"
           cache: "pnpm"
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Build Frontend Assets
-        run: |
+      - run: |
           cd frontend
           pnpm install --frozen-lockfile
           pnpm build-only
-      - name: Upload Frontend Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
           path: frontend/dist
 
   Build-Linux-ARM64:
     needs: Build-Frontend
-    # 使用 GitHub 原生 ARM64 运行器
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     env:
       APP_NAME: GUI.for.SingBox
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      # 使用 QEMU 模拟 ARM64 环境
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
         with:
-          go-version-file: go.mod
-          check-latest: true
-
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          platforms: arm64
 
       - name: Download Frontend Artifact
         uses: actions/download-artifact@v4
@@ -57,27 +48,35 @@ jobs:
           name: frontend-dist
           path: frontend/dist
 
-      - name: Install Linux Dependencies (WebKit 4.0)
+      # 在 Ubuntu 22.04 的 ARM64 容器内进行构建
+      - name: Build in Ubuntu 22.04 Container
         run: |
-          sudo apt-get update
-          # 这里修改为 4.0 版本
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev build-essential pkg-config
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/work \
+            -w /work \
+            ubuntu:22.04 /bin/bash -c "
+              apt-get update && \
+              apt-get install -y wget curl git build-essential pkg-config \
+              libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev zip && \
+              
+              # 安装 Go
+              wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz && \
+              tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz && \
+              export PATH=\$PATH:/usr/local/go/bin && \
+              
+              # 安装 Wails
+              go install github.com/wailsapp/wails/v2/cmd/wails@latest && \
+              export PATH=\$PATH:/root/go/bin && \
+              
+              echo '==> Starting Wails Build...' && \
+              wails build -m -s -trimpath -skipbindings -devtools -tags webkit2_40 -o $APP_NAME && \
+              
+              cd build/bin && \
+              zip $APP_NAME-linux-arm64-webkit40.zip $APP_NAME
+            "
 
-      - name: Build for Linux ARM64
-        run: |
-          export GOOS=linux
-          export GOARCH=arm64
-          
-          echo "==> Building Linux arm64 with WebKit 4.0..."
-          # 关键修改：将编译标签改为 webkit2_40
-          ~/go/bin/wails build -m -s -trimpath -skipbindings -devtools -tags webkit2_40 -o $APP_NAME
-          
-          cd build/bin
-          zip $APP_NAME-linux-arm64-webkit40.zip $APP_NAME
-          
       - name: Upload Linux ARM64 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: GUI-SingBox-Linux-ARM64
           path: build/bin/*.zip
-          retention-days: 7

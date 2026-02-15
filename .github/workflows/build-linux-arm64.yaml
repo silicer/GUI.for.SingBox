@@ -70,18 +70,18 @@ jobs:
         run: |
           export PATH=$PATH:/usr/local/go/bin
           
-          # 1. 安装特定的旧版 Wails CLI
           echo "==> Installing Wails CLI v2.8.2..."
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.8.2
-          
           W_BIN=$(go env GOPATH)/bin/wails
           
-          # 2. 强制将项目中的 wails 依赖版本降级，防止编译时拉取最新版代码
-          # 这一步非常关键，否则 wails build 会尝试拉取 v2.11.0 的包
-          go mod edit -replace github.com/wailsapp/wails/v2=github.com/wailsapp/wails/v2@v2.8.2
+          # 1. 物理修改 go.mod 中的版本号，消除 Warning 并确保不下载新版代码
+          sed -i 's/github.com\/wailsapp\/wails\/v2 v2.11.0/github.com\/wailsapp\/wails\/v2 v2.8.2/g' go.mod
+          
+          # 2. 移除可能存在的 replace 指令并重新整理
+          go mod edit -dropreplace github.com/wailsapp/wails/v2
           go mod tidy
 
-          echo "==> Starting Build..."
+          echo "==> Starting Build with locked version..."
           $W_BIN build -m -s -trimpath -skipbindings -tags webkit2_40 -o $APP_NAME
 
       - name: Package AppImage
